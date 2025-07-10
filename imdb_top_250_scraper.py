@@ -1,4 +1,5 @@
 import requests
+import requests.adapters
 from bs4 import BeautifulSoup
 import pandas as pd
 import time
@@ -7,9 +8,16 @@ import re
 import sys
 from datetime import datetime
 
+# Configuration constants
+DEFAULT_TIMEOUT = 30
+DEFAULT_SLEEP_INTERVAL = 0.5
+PROGRESS_BAR_LENGTH = 50
+CONNECTION_POOL_SIZE = 10
+MAX_RETRIES = 3
+
 # Configure request headers to mimic a browser
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': 'IMDb-Scraper/1.0 (Educational Purpose)',  # More ethical user agent
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Referer': 'https://www.imdb.com/',
@@ -17,16 +25,26 @@ HEADERS = {
 }
 
 class ImdbScraper:
-    def __init__(self):
+    def __init__(self, timeout=DEFAULT_TIMEOUT):
         self.base_url = 'https://www.imdb.com'
         self.top_movies_url = f"{self.base_url}/chart/top/"
         self.new_movies_url = f"{self.base_url}/chart/boxoffice/"  # Box office for latest movies
         self.newest_releases_url = f"{self.base_url}/chart/moviemeter/"  # Most popular current movies
         self.coming_soon_url = f"{self.base_url}/movies-coming-soon/"
+        self.timeout = timeout
+        self.sleep_interval = DEFAULT_SLEEP_INTERVAL
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        # Configure connection pooling for better performance
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=CONNECTION_POOL_SIZE,
+            pool_maxsize=CONNECTION_POOL_SIZE * 2,
+            max_retries=MAX_RETRIES
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
     
-    def progress_bar(self, current, total, bar_length=50, prefix=''):
+    def progress_bar(self, current, total, bar_length=PROGRESS_BAR_LENGTH, prefix=''):
         """Display a custom progress bar in the console"""
         progress = float(current) / float(total)
         arrow = '■' * int(round(progress * bar_length))
@@ -40,7 +58,7 @@ class ImdbScraper:
         print("🏆 Fetching IMDb Top 250 movies list...")
         
         try:
-            response = self.session.get(self.top_movies_url)
+            response = self.session.get(self.top_movies_url, timeout=self.timeout)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -102,8 +120,11 @@ class ImdbScraper:
             print("\n✅ Top movies list retrieved.")
             return movies
             
+        except (requests.RequestException, requests.Timeout) as e:
+            print(f"❌ Network error fetching top movies: {str(e)}")
+            return []
         except Exception as e:
-            print(f"❌ Error fetching top movies: {str(e)}")
+            print(f"❌ Unexpected error fetching top movies: {str(e)}")
             return []
     
     def get_newest_movies(self):
@@ -114,7 +135,7 @@ class ImdbScraper:
         print("\n🔥 Fetching IMDb's Most Popular Movies (newest trending movies)...")
         
         try:
-            response = self.session.get(self.newest_releases_url)
+            response = self.session.get(self.newest_releases_url, timeout=self.timeout)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -173,8 +194,10 @@ class ImdbScraper:
                 
                 print("\n✅ Popular movies list retrieved.")
         
+        except (requests.RequestException, requests.Timeout) as e:
+            print(f"❌ Network error fetching popular movies: {str(e)}")
         except Exception as e:
-            print(f"❌ Error fetching popular movies: {str(e)}")
+            print(f"❌ Unexpected error fetching popular movies: {str(e)}")
         
         # Also get upcoming/coming soon movies
         print("\n🎬 Fetching IMDb's Coming Soon Movies...")
@@ -185,7 +208,7 @@ class ImdbScraper:
             month_year = f"{current_date.year}-{current_date.month:02d}"
             coming_soon_url = f"{self.coming_soon_url}/{month_year}"
             
-            response = self.session.get(coming_soon_url)
+            response = self.session.get(coming_soon_url, timeout=self.timeout)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -202,7 +225,8 @@ class ImdbScraper:
                 print(f"✅ Found {len(movie_items)} coming soon movies.")
                 
                 total = len(movie_items)
-                coming_soon_rank = 1
+                # Continue ranking from where popular movies left off
+                current_rank = len([m for m in newest_movies if m['Type'] == 'Popular/Trending']) + 1
                 
                 for i, item in enumerate(movie_items, 1):
                     try:
@@ -222,7 +246,7 @@ class ImdbScraper:
                         
                         # Build the movie object
                         movie = {
-                            'Rank': coming_soon_rank,
+                            'Rank': current_rank,
                             'Title': title,
                             'Year': 'Coming Soon',
                             'Rating': 0.0,  # No rating yet for unreleased movies
@@ -235,7 +259,7 @@ class ImdbScraper:
                         }
                         
                         newest_movies.append(movie)
-                        coming_soon_rank += 1
+                        current_rank += 1
                         self.progress_bar(i, total, prefix='Coming Soon Movies: ')
                         
                     except Exception as e:
@@ -243,8 +267,10 @@ class ImdbScraper:
                 
                 print("\n✅ Coming soon movies list retrieved.")
         
+        except (requests.RequestException, requests.Timeout) as e:
+            print(f"❌ Network error fetching coming soon movies: {str(e)}")
         except Exception as e:
-            print(f"❌ Error fetching coming soon movies: {str(e)}")
+            print(f"❌ Unexpected error fetching coming soon movies: {str(e)}")
         
         return newest_movies
     
@@ -266,7 +292,7 @@ class ImdbScraper:
                     continue
                 
                 # Get the movie detail page
-                response = self.session.get(movie['URL'])
+                response = self.session.get(movie['URL'], timeout=self.timeout)
                 if response.status_code != 200:
                     print(f"\n⚠️ Failed to fetch details for '{movie['Title']}'. Status code: {response.status_code}")
                     enriched_movies.append(movie)
@@ -308,7 +334,7 @@ class ImdbScraper:
                 self.progress_bar(i, total, prefix='Fetching Details: ')
                 
                 # Sleep to avoid hitting rate limits
-                time.sleep(0.5)
+                time.sleep(self.sleep_interval)
                 
             except Exception as e:
                 print(f"\n❌ Error fetching details for '{movie['Title']}': {str(e)}")
@@ -414,7 +440,8 @@ class ImdbScraper:
                     worksheet = writer.sheets['Top Movies']
                     
                     # Add a title at the top
-                    worksheet.merge_range('A1:G1', 'IMDb Top 250 Movies', title_format)
+                    last_col_letter = chr(65 + len(display_columns) - 1)
+                    worksheet.merge_range(f'A1:{last_col_letter}1', 'IMDb Top 250 Movies', title_format)
                     
                     # Write the headers in row 2
                     for col_num, value in enumerate(df_top.columns.values):
@@ -482,7 +509,8 @@ class ImdbScraper:
                         worksheet = writer.sheets['Popular Movies']
                         
                         # Add a title at the top
-                        worksheet.merge_range('A1:G1', 'IMDb Most Popular Movies', title_format)
+                        last_col_letter = chr(65 + len(display_columns) - 1)
+                        worksheet.merge_range(f'A1:{last_col_letter}1', 'IMDb Most Popular Movies', title_format)
                         
                         # Write the headers in row 2
                         for col_num, value in enumerate(df_popular.columns.values):
@@ -578,7 +606,8 @@ class ImdbScraper:
                         for row_num, row in enumerate(df_coming_soon.itertuples(index=False), 2):
                             worksheet.write(row_num, 0, row.Rank, rank_format)
                             worksheet.write(row_num, 1, row.Title, title_cell_format)
-                            worksheet.write(row_num, 2, getattr(row, 'Release Date'), coming_soon_format)
+                            release_date = getattr(row, 'Release_Date', getattr(row, 'Release Date', 'TBD'))
+                            worksheet.write(row_num, 2, release_date, coming_soon_format)
                             worksheet.write(row_num, 3, row.Genres, text_format)
                             worksheet.write(row_num, 4, row.Director, text_format)
                             worksheet.write(row_num, 5, row.Stars, text_format)
@@ -650,4 +679,96 @@ class ImdbScraper:
                 worksheet.set_column('B:B', 15)
                 
                 # Add Dashboard title
-                worksheet.merge_range
+                worksheet.merge_range('A1:B1', 'IMDb Movie Data Dashboard', dashboard_title_format)
+                
+                # Add statistics
+                row = 2
+                worksheet.write(row, 0, 'Data Collection Summary', section_title_format)
+                worksheet.write(row, 1, '', section_title_format)
+                row += 1
+                
+                if top_movies:
+                    worksheet.write(row, 0, 'Top Movies Count', item_format)
+                    worksheet.write(row, 1, len(top_movies), value_format)
+                    row += 1
+                
+                if newest_movies:
+                    popular_count = len([m for m in newest_movies if m['Type'] == 'Popular/Trending'])
+                    coming_soon_count = len([m for m in newest_movies if m['Type'] == 'Coming Soon'])
+                    
+                    worksheet.write(row, 0, 'Popular Movies Count', item_format)
+                    worksheet.write(row, 1, popular_count, value_format)
+                    row += 1
+                    
+                    worksheet.write(row, 0, 'Coming Soon Movies Count', item_format)
+                    worksheet.write(row, 1, coming_soon_count, value_format)
+                    row += 1
+                
+                total_movies = len(top_movies or []) + len(newest_movies or [])
+                worksheet.write(row, 0, 'Total Movies Collected', item_format)
+                worksheet.write(row, 1, total_movies, value_format)
+                row += 1
+                
+                worksheet.write(row, 0, 'Data Collection Date', item_format)
+                worksheet.write(row, 1, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), value_format)
+                
+            print(f"✅ Excel file '{filename}' created successfully!")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error saving to Excel: {str(e)}")
+            return False
+
+    def run_scraper(self, include_details=True, details_limit=None):
+        """Main method to run the complete scraping process"""
+        print("🎬 Starting IMDb Movie Scraper...")
+        print("=" * 60)
+        
+        # Get top movies
+        top_movies = self.get_top_movies()
+        
+        # Get newest movies
+        newest_movies = self.get_newest_movies()
+        
+        # Enrich with details if requested
+        if include_details:
+            if top_movies:
+                print(f"\n🔍 Enriching top movies with detailed information...")
+                top_movies = self.enrich_movie_details(top_movies, details_limit)
+            
+            if newest_movies:
+                print(f"\n🔍 Enriching newest movies with detailed information...")
+                newest_movies = self.enrich_movie_details(newest_movies, details_limit)
+        
+        # Save to Excel
+        success = self.save_to_excel(top_movies, newest_movies)
+        
+        if success:
+            print("\n🎉 Scraping completed successfully!")
+            print(f"📊 Top movies collected: {len(top_movies or [])}")
+            print(f"📊 Newest movies collected: {len(newest_movies or [])}")
+        else:
+            print("\n❌ Scraping completed with errors.")
+        
+        return top_movies, newest_movies
+
+
+def main():
+    """Main execution function"""
+    scraper = ImdbScraper()
+    
+    try:
+        # Run the scraper with details for first 50 movies of each type
+        top_movies, newest_movies = scraper.run_scraper(
+            include_details=True,
+            details_limit=50
+        )
+        
+    except KeyboardInterrupt:
+        print("\n\n🛑 Scraping interrupted by user.")
+    except Exception as e:
+        print(f"\n❌ Unexpected error: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()
