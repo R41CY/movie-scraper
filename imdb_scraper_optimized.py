@@ -108,14 +108,23 @@ class PerformanceOptimizedScraper:
     
     def _log_performance_metrics(self):
         """Log performance metrics"""
-        if self.metrics['start_time'] and self.metrics['end_time']:
-            duration = self.metrics['end_time'] - self.metrics['start_time']
+        start_time = self.metrics.get('start_time')
+        end_time = self.metrics.get('end_time')
+        
+        if start_time is not None and end_time is not None:
+            duration = end_time - start_time
             logger.info(f"Performance Metrics:")
             logger.info(f"  Total Duration: {duration:.2f}s")
             logger.info(f"  Requests Made: {self.metrics['requests_made']}")
             logger.info(f"  Cache Hits: {self.metrics['cache_hits']}")
             logger.info(f"  Errors: {self.metrics['errors']}")
             logger.info(f"  Avg Request Time: {duration/max(1, self.metrics['requests_made']):.2f}s")
+        else:
+            logger.info(f"Performance Metrics:")
+            logger.info(f"  Total Duration: N/A (timing not available)")
+            logger.info(f"  Requests Made: {self.metrics['requests_made']}")
+            logger.info(f"  Cache Hits: {self.metrics['cache_hits']}")
+            logger.info(f"  Errors: {self.metrics['errors']}")
     
     def progress_bar(self, current, total, bar_length=PROGRESS_BAR_LENGTH, prefix=''):
         """Display a custom progress bar in the console"""
@@ -438,8 +447,15 @@ class PerformanceOptimizedScraper:
                 metrics_sheet = workbook.add_worksheet('Performance')
                 metrics_sheet.write(0, 0, 'Performance Metrics', title_format)
                 
+                # Calculate duration safely
+                start_time = self.metrics.get('start_time', 0)
+                end_time = self.metrics.get('end_time', 0)
+                duration = 0
+                if start_time is not None and end_time is not None and start_time > 0 and end_time > 0:
+                    duration = end_time - start_time
+                
                 metrics_data = [
-                    ['Total Duration (seconds)', self.metrics.get('end_time', 0) - self.metrics.get('start_time', 0)],
+                    ['Total Duration (seconds)', duration],
                     ['Requests Made', self.metrics['requests_made']],
                     ['Cache Hits', self.metrics['cache_hits']],
                     ['Errors', self.metrics['errors']],

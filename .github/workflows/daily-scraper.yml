@@ -94,9 +94,13 @@ jobs:
         echo "## Performance Metrics" >> summary.md
         
         # Extract performance info from log if available
-        if [ -f "imdb_scraper.log" ]; then
+        if [ -f "imdb_scraper.log" ] && [ -s "imdb_scraper.log" ]; then
           echo "```" >> summary.md
-          grep -E "(Performance Metrics|Total Duration|Requests Made|Cache Hits|Errors)" imdb_scraper.log | tail -10 >> summary.md
+          grep -E "(Performance Metrics|Total Duration|Requests Made|Cache Hits|Errors)" imdb_scraper.log | tail -10 >> summary.md || echo "No performance metrics found in log" >> summary.md
+          echo "```" >> summary.md
+        else
+          echo "```" >> summary.md
+          echo "Log file not available or empty" >> summary.md
           echo "```" >> summary.md
         fi
     
@@ -122,18 +126,27 @@ jobs:
     - name: Create release on success
       if: steps.scraper.outputs.excel_created == 'true'
       env:
+        # NOTE: If this step fails with HTTP 403, you need to:
+        # 1. Create a Personal Access Token (PAT) with 'repo' scope
+        # 2. Add it as a repository secret named 'GH_PAT'
+        # 3. Replace 'github.token' with 'secrets.GH_PAT' below
         GH_TOKEN: ${{ github.token }}
       run: |
         # Create a release with the data file
         release_name="imdb-data-$(date +%Y%m%d)"
         release_tag="data-$(date +%Y%m%d-%H%M)"
         
-        # Create release
+        # Create release (may fail if token lacks permissions)
         gh release create "$release_tag" \
           --title "$release_name" \
           --notes-file summary.md \
           --latest \
-          "imdb_movies_optimized.xlsx#IMDb Movies Data"
+          "imdb_movies_optimized.xlsx#IMDb Movies Data" || {
+            echo "Failed to create release. This likely means the GitHub token lacks permissions."
+            echo "To fix this, create a PAT with 'repo' scope and add it as a secret named 'GH_PAT'"
+            echo "Then change 'github.token' to 'secrets.GH_PAT' in the workflow"
+            exit 0
+          }
     
     - name: Cleanup old releases
       if: always()
@@ -147,7 +160,10 @@ jobs:
         while read tag; do
           echo "Deleting old release: $tag"
           gh release delete "$tag" --yes || true
-        done
+        done || {
+          echo "Failed to cleanup releases. This may be due to token permissions."
+          echo "This is not critical and the workflow can continue."
+        }
 
   notify-on-failure:
     runs-on: ubuntu-latest
